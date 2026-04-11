@@ -2,6 +2,8 @@
 
 Process-bigraph wrapper for [Mem3DG](https://github.com/RangamaniLabUCSD/Mem3DG), a membrane mechanics simulator using discrete differential geometry on triangulated surface meshes.
 
+**[View Interactive Demo Report](https://vivarium-collective.github.io/pbg-mem3dg/)** -- osmotic deflation, membrane patch bulging, and tubular constriction with 3D mesh viewers, Plotly charts, and bigraph architecture diagrams.
+
 ## What it does
 
 Wraps the Mem3DG simulation engine as a `process-bigraph` Process, enabling membrane mechanics simulations to be composed with other biological processes in the bigraph framework. The wrapper uses the **bridge pattern**: it lazily initializes a Mem3DG `System` and `Euler` integrator internally, and on each `update()` call advances the simulation by the requested time interval using manual stepping.
