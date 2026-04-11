@@ -6,7 +6,6 @@ build/
 *.pyc
 .pytest_cache/
 demo/*.png
-demo/*.html
 output/
 *.nc
 .idea/

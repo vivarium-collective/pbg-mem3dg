@@ -106,10 +106,12 @@ CONFIGS = [
 
 
 def run_simulation(cfg_entry):
-    """Run a single simulation, returning faces + snapshot list."""
+    """Run a single simulation, returning faces, snapshots, and wall-clock runtime."""
+    import time as _time
     core = allocate_core()
     core.register_link('Mem3DGProcess', Mem3DGProcess)
 
+    t0 = _time.perf_counter()
     proc = Mem3DGProcess(config=cfg_entry['config'], core=core)
     state0 = proc.initial_state()
     faces = proc.get_faces()
@@ -127,7 +129,8 @@ def run_simulation(cfg_entry):
         if result.get('converged'):
             break
 
-    return faces, snapshots
+    runtime = _time.perf_counter() - t0
+    return faces, snapshots, runtime
 
 
 def _snap(t, s):
@@ -144,48 +147,71 @@ def _snap(t, s):
     }
 
 
-def generate_bigraph_svg(cfg_entry):
+def generate_bigraph_image(cfg_entry):
     """Generate a colored bigraph-viz SVG for the composite document."""
+    import re
     from bigraph_viz import plot_bigraph
 
-    doc = make_membrane_document(**{
-        k: v for k, v in cfg_entry['config'].items()
-        if k in ('mesh_type', 'radius', 'subdivision', 'Kbc',
-                 'tension_modulus', 'osmotic_strength',
-                 'preferred_volume_fraction')
-    }, interval=cfg_entry['total_time'] / cfg_entry['n_snapshots'])
+    # Build a simplified document for cleaner visualization —
+    # only the key output ports, not all energy sub-components
+    doc = {
+        'membrane': {
+            '_type': 'process',
+            'address': 'local:Mem3DGProcess',
+            'config': {k: v for k, v in cfg_entry['config'].items()
+                       if k in ('mesh_type', 'Kbc', 'radius')},
+            'interval': cfg_entry['total_time'] / cfg_entry['n_snapshots'],
+            'inputs': {},
+            'outputs': {
+                'vertex_positions': ['stores', 'vertex_positions'],
+                'mean_curvatures': ['stores', 'mean_curvatures'],
+                'total_energy': ['stores', 'total_energy'],
+                'surface_area': ['stores', 'surface_area'],
+                'volume': ['stores', 'volume'],
+            },
+        },
+        'stores': {},
+        'emitter': {
+            '_type': 'step',
+            'address': 'local:ram-emitter',
+            'config': {'emit': {
+                'total_energy': 'float',
+                'surface_area': 'float',
+                'volume': 'float',
+                'time': 'float',
+            }},
+            'inputs': {
+                'total_energy': ['stores', 'total_energy'],
+                'surface_area': ['stores', 'surface_area'],
+                'volume': ['stores', 'volume'],
+                'time': ['global_time'],
+            },
+        },
+    }
 
-    # Color nodes by role
     node_colors = {
         ('membrane',): '#6366f1',
         ('emitter',): '#8b5cf6',
         ('stores',): '#e0e7ff',
     }
-    # Color store children
-    if 'stores' in doc:
-        for k in doc['stores']:
-            node_colors[('stores', k)] = '#f0f0ff'
 
     outdir = tempfile.mkdtemp()
     plot_bigraph(
         state=doc,
         out_dir=outdir,
         filename='bigraph',
-        file_format='svg',
+        file_format='png',
         remove_process_place_edges=True,
-        rankdir='TB',
+        rankdir='LR',
         node_fill_colors=node_colors,
+        node_label_size='16pt',
+        port_labels=False,
         dpi='150',
-        node_label_size='13pt',
-        port_labels=True,
-        port_label_size='9pt',
     )
-    svg_path = os.path.join(outdir, 'bigraph.svg')
-    with open(svg_path) as f:
-        svg = f.read()
-    svg = svg.replace('<?xml version="1.0" encoding="UTF-8" standalone="no"?>', '')
-    svg = svg.replace('<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"\n "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">', '')
-    return svg.strip()
+    png_path = os.path.join(outdir, 'bigraph.png')
+    with open(png_path, 'rb') as f:
+        b64 = base64.b64encode(f.read()).decode()
+    return f'data:image/png;base64,{b64}'
 
 
 def build_pbg_document(cfg_entry):
@@ -215,7 +241,7 @@ def generate_html(sim_results, output_path):
     sections_html = []
     all_js_data = {}
 
-    for idx, (cfg, (faces, snapshots)) in enumerate(sim_results):
+    for idx, (cfg, (faces, snapshots, runtime)) in enumerate(sim_results):
         sid = cfg['id']
         cs = COLOR_SCHEMES[cfg['color_scheme']]
         n_verts = len(snapshots[0]['vertices'])
@@ -254,7 +280,7 @@ def generate_html(sim_results, output_path):
 
         # Bigraph SVG
         print(f'  Generating bigraph diagram for {sid}...')
-        bigraph_svg = generate_bigraph_svg(cfg)
+        bigraph_img = generate_bigraph_image(cfg)
 
         # PBG document JSON
         pbg_doc = build_pbg_document(cfg)
@@ -283,6 +309,7 @@ def generate_html(sim_results, output_path):
         <div class="metric"><span class="metric-label">Area</span><span class="metric-value">{sa_pct}%</span><span class="metric-sub">{sa0:.2f} &rarr; {sa1:.2f}</span></div>
         <div class="metric"><span class="metric-label">Volume</span><span class="metric-value">{v_pct}%</span><span class="metric-sub">{v0:.2f} &rarr; {v1:.2f}</span></div>
         <div class="metric"><span class="metric-label">Snapshots</span><span class="metric-value">{len(snapshots)}</span></div>
+        <div class="metric"><span class="metric-label">Runtime</span><span class="metric-value">{runtime:.1f}s</span></div>
       </div>
 
       <h3 class="subsection-title">3D Membrane Viewer</h3>
@@ -318,14 +345,8 @@ def generate_html(sim_results, output_path):
       <div class="pbg-row">
         <div class="pbg-col">
           <h3 class="subsection-title">Bigraph Architecture</h3>
-          <div class="bigraph-viewer" id="bgv-{sid}">
-            <div class="bgv-inner" id="bgvi-{sid}">{bigraph_svg}</div>
-            <div class="bgv-controls">
-              <button class="bgv-btn" onclick="bgvZoom('{sid}',1.3)" title="Zoom in">+</button>
-              <button class="bgv-btn" onclick="bgvZoom('{sid}',0.77)" title="Zoom out">&minus;</button>
-              <button class="bgv-btn" onclick="bgvReset('{sid}')" title="Fit to view">Fit</button>
-            </div>
-            <div class="bgv-hint">Scroll to zoom &middot; Drag to pan</div>
+          <div class="bigraph-img-wrap">
+            <img src="{bigraph_img}" alt="Bigraph architecture diagram">
           </div>
         </div>
         <div class="pbg-col">
@@ -420,18 +441,9 @@ body {{ font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-seri
 .chart {{ height:280px; }}
 .pbg-row {{ display:grid; grid-template-columns:1fr 1fr; gap:1.5rem; margin-top:1rem; }}
 .pbg-col {{ min-width:0; }}
-.bigraph-viewer {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px;
-                   position:relative; overflow:hidden; height:500px; cursor:grab; }}
-.bigraph-viewer:active {{ cursor:grabbing; }}
-.bgv-inner {{ position:absolute; transform-origin:0 0; }}
-.bgv-inner svg {{ display:block; }}
-.bgv-controls {{ position:absolute; top:.6rem; right:.6rem; display:flex; gap:.3rem; z-index:2; }}
-.bgv-btn {{ width:32px; height:32px; border-radius:7px; border:1px solid #e2e8f0;
-            background:#fff; color:#334155; font-size:1rem; font-weight:600;
-            cursor:pointer; display:flex; align-items:center; justify-content:center;
-            box-shadow:0 1px 3px rgba(0,0,0,.06); }}
-.bgv-btn:hover {{ background:#eef2ff; border-color:#c7d2fe; }}
-.bgv-hint {{ position:absolute; bottom:.5rem; left:.8rem; font-size:.7rem; color:#94a3b8; }}
+.bigraph-img-wrap {{ background:#fafafa; border:1px solid #e2e8f0; border-radius:10px;
+                     padding:1.5rem; text-align:center; }}
+.bigraph-img-wrap img {{ max-width:100%; height:auto; }}
 .json-tree {{ background:#f8fafc; border:1px solid #e2e8f0; border-radius:10px;
               padding:1rem; max-height:500px; overflow-y:auto; font-family:'SF Mono',
               Menlo,Monaco,'Courier New',monospace; font-size:.78rem; line-height:1.5; }}
@@ -721,83 +733,6 @@ Object.keys(DATA).forEach(sid => {{
   }}, pCfg);
 }});
 
-// ─── Bigraph Zoom/Pan ───
-const bgvState = {{}};
-
-function initBgv(sid) {{
-  const ctr = document.getElementById('bgv-' + sid);
-  const inner = document.getElementById('bgvi-' + sid);
-  if (!ctr || !inner) return;
-  const svg = inner.querySelector('svg');
-  if (!svg) return;
-
-  // Fit SVG to container initially
-  const svgW = svg.getAttribute('width') ? parseFloat(svg.getAttribute('width')) : 800;
-  const svgH = svg.getAttribute('height') ? parseFloat(svg.getAttribute('height')) : 400;
-  const ctrW = ctr.clientWidth;
-  const ctrH = ctr.clientHeight;
-  const fitScale = Math.min(ctrW / svgW, ctrH / svgH) * 0.9;
-
-  const st = {{ scale: fitScale, tx: (ctrW - svgW * fitScale) / 2, ty: (ctrH - svgH * fitScale) / 2,
-                dragging: false, sx: 0, sy: 0, fitScale }};
-  bgvState[sid] = st;
-
-  function apply() {{
-    inner.style.transform = `translate(${{st.tx}}px,${{st.ty}}px) scale(${{st.scale}})`;
-  }}
-  apply();
-
-  ctr.addEventListener('wheel', function(e) {{
-    e.preventDefault();
-    const f = e.deltaY < 0 ? 1.15 : 0.87;
-    const r = ctr.getBoundingClientRect();
-    const mx = e.clientX - r.left, my = e.clientY - r.top;
-    st.tx = mx - f * (mx - st.tx);
-    st.ty = my - f * (my - st.ty);
-    st.scale *= f;
-    apply();
-  }}, {{ passive: false }});
-
-  ctr.addEventListener('mousedown', function(e) {{
-    st.dragging = true;
-    st.sx = e.clientX - st.tx;
-    st.sy = e.clientY - st.ty;
-    e.preventDefault();
-  }});
-  window.addEventListener('mousemove', function(e) {{
-    if (!st.dragging) return;
-    st.tx = e.clientX - st.sx;
-    st.ty = e.clientY - st.sy;
-    apply();
-  }});
-  window.addEventListener('mouseup', function() {{ st.dragging = false; }});
-}}
-
-function bgvZoom(sid, factor) {{
-  const st = bgvState[sid];
-  const ctr = document.getElementById('bgv-' + sid);
-  const inner = document.getElementById('bgvi-' + sid);
-  const cx = ctr.clientWidth / 2, cy = ctr.clientHeight / 2;
-  st.tx = cx - factor * (cx - st.tx);
-  st.ty = cy - factor * (cy - st.ty);
-  st.scale *= factor;
-  inner.style.transform = `translate(${{st.tx}}px,${{st.ty}}px) scale(${{st.scale}})`;
-}}
-
-function bgvReset(sid) {{
-  const st = bgvState[sid];
-  const ctr = document.getElementById('bgv-' + sid);
-  const inner = document.getElementById('bgvi-' + sid);
-  const svg = inner.querySelector('svg');
-  const svgW = parseFloat(svg.getAttribute('width')) || 800;
-  const svgH = parseFloat(svg.getAttribute('height')) || 400;
-  st.scale = st.fitScale;
-  st.tx = (ctr.clientWidth - svgW * st.scale) / 2;
-  st.ty = (ctr.clientHeight - svgH * st.scale) / 2;
-  inner.style.transform = `translate(${{st.tx}}px,${{st.ty}}px) scale(${{st.scale}})`;
-}}
-
-Object.keys(DATA).forEach(sid => initBgv(sid));
 </script>
 </body>
 </html>"""
@@ -814,8 +749,9 @@ def run_demo():
     sim_results = []
     for cfg in CONFIGS:
         print(f'Running: {cfg["title"]}...')
-        faces, snapshots = run_simulation(cfg)
-        sim_results.append((cfg, (faces, snapshots)))
+        faces, snapshots, runtime = run_simulation(cfg)
+        sim_results.append((cfg, (faces, snapshots, runtime)))
+        print(f'  Runtime: {runtime:.2f}s')
         print(f'  {len(snapshots)} snapshots collected')
 
     print('Generating HTML report...')
