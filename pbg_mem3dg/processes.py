@@ -57,19 +57,25 @@ class Mem3DGProcess(Process):
         'mesh_type': {'_type': 'string', '_default': 'icosphere'},
         'radius': {'_type': 'float', '_default': 1.0},
         'subdivision': {'_type': 'integer', '_default': 3},
+        'axial_subdivision': {'_type': 'integer', '_default': 0},
         # Bending
         'Kbc': {'_type': 'float', '_default': 8.22e-5},
         'H0c': {'_type': 'float', '_default': 0.0},
         # Tension (harmonic preferred-area model)
         'tension_modulus': {'_type': 'float', '_default': 0.1},
         'preferred_area': {'_type': 'float', '_default': 0.0},
-        # Osmotic pressure (harmonic preferred-volume model)
+        'preferred_area_scale': {'_type': 'float', '_default': 1.0},
+        # Osmotic pressure
+        'osmotic_model': {'_type': 'string', '_default': 'preferred_volume'},
         'osmotic_strength': {'_type': 'float', '_default': 0.02},
+        'osmotic_pressure': {'_type': 'float', '_default': 0.0},
         'preferred_volume_fraction': {'_type': 'float', '_default': 0.7},
         # Spring regularization
         'Kse': {'_type': 'float', '_default': 0.0},
         'Ksl': {'_type': 'float', '_default': 0.0},
         'Kst': {'_type': 'float', '_default': 0.0},
+        # Boundary conditions
+        'boundary_condition': {'_type': 'string', '_default': 'none'},
         # Integrator
         'characteristic_timestep': {'_type': 'float', '_default': 2.0},
         'tolerance': {'_type': 'float', '_default': 1e-11},
@@ -124,6 +130,15 @@ class Mem3DGProcess(Process):
         self._build_system()
         return self._read_state()
 
+    def get_faces(self):
+        """Return the face connectivity array as a list of [i, j, k] triples.
+
+        Must be called after initial_state() or update() has triggered
+        system initialization.
+        """
+        self._build_system()
+        return self._geometry.getFaceMatrix().tolist()
+
     def _build_system(self):
         """Lazily initialize the Mem3DG System and Euler integrator."""
         if self._system is not None:
@@ -145,10 +160,11 @@ class Mem3DGProcess(Process):
                 radius=cfg['radius'],
                 subdivision=cfg['subdivision'])
         elif cfg['mesh_type'] == 'cylinder':
+            axial = cfg['axial_subdivision'] or cfg['subdivision'] * 2
             face, vertex = dg.getCylinder(
                 radius=cfg['radius'],
                 radialSubdivision=cfg['subdivision'],
-                axialSubdivision=cfg['subdivision'] * 2)
+                axialSubdivision=axial)
         else:
             raise ValueError(
                 f"Unknown mesh_type: {cfg['mesh_type']}. "
@@ -172,7 +188,10 @@ class Mem3DGProcess(Process):
 
         # Tension model
         sa = geo.getSurfaceArea()
-        preferred_area = cfg['preferred_area'] if cfg['preferred_area'] > 0 else sa
+        if cfg['preferred_area'] > 0:
+            preferred_area = cfg['preferred_area']
+        else:
+            preferred_area = sa * cfg['preferred_area_scale']
         p.tension.form = partial(
             dgb.preferredAreaSurfaceTensionModel,
             modulus=cfg['tension_modulus'],
@@ -180,11 +199,20 @@ class Mem3DGProcess(Process):
 
         # Osmotic model
         vol = geo.getVolume()
-        p.osmotic.form = partial(
-            dgb.preferredVolumeOsmoticPressureModel,
-            preferredVolume=cfg['preferred_volume_fraction'] * vol,
-            reservoirVolume=0,
-            strength=cfg['osmotic_strength'])
+        if cfg['osmotic_model'] == 'constant':
+            p.osmotic.form = partial(
+                dgb.constantOsmoticPressureModel,
+                pressure=cfg['osmotic_pressure'])
+        else:
+            p.osmotic.form = partial(
+                dgb.preferredVolumeOsmoticPressureModel,
+                preferredVolume=cfg['preferred_volume_fraction'] * vol,
+                reservoirVolume=0,
+                strength=cfg['osmotic_strength'])
+
+        # Boundary conditions
+        if cfg['boundary_condition'] != 'none':
+            p.boundary.shapeBoundaryCondition = cfg['boundary_condition']
 
         # Build System
         self._system = dg.System(geometry=geo, parameters=p)
