@@ -92,9 +92,20 @@ class Mem3DGProcess(Process):
         self._output_dir = None
         self._ply_path = None
         self._converged = False
+        # Track the osmotic-strength offset currently baked into the System.
+        # When the input port reports a new value, _maybe_rebuild() snapshots
+        # the current vertex positions, destroys the System, and rebuilds it
+        # with the new effective osmotic_strength.
+        self._current_osmotic_offset = 0.0
 
     def inputs(self):
-        return {}
+        # `osmotic_strength_offset` is a runtime modulator added on top of
+        # the cfg['osmotic_strength'] baked in at construction. A sibling
+        # process (e.g. an actin simulator computing how hard filaments are
+        # pushing on the membrane) can write here to drive bulge dynamics.
+        # Treated as 0.0 when missing, so existing demos keep working
+        # unchanged.
+        return {'osmotic_strength_offset': 'float'}
 
     def outputs(self):
         return {
@@ -139,9 +150,20 @@ class Mem3DGProcess(Process):
         self._build_system()
         return self._geometry.getFaceMatrix().tolist()
 
-    def _build_system(self):
-        """Lazily initialize the Mem3DG System and Euler integrator."""
-        if self._system is not None:
+    def _build_system(self, override_vertex=None, override_face=None,
+                      osmotic_offset=0.0):
+        """Initialize (or rebuild) the Mem3DG System and Euler integrator.
+
+        On first call: generates the configured mesh and builds System with
+        cfg['osmotic_strength'].
+
+        On subsequent calls (rebuild path used by the runtime
+        osmotic_strength_offset input): the caller supplies the current
+        vertex/face matrices and a new effective osmotic_strength, and a
+        fresh System is built around them. The previous System and integrator
+        are discarded.
+        """
+        if self._system is not None and override_vertex is None:
             return
 
         import pymem3dg as dg
@@ -150,8 +172,10 @@ class Mem3DGProcess(Process):
 
         cfg = self.config
 
-        # Generate mesh
-        if cfg['mesh_type'] == 'icosphere':
+        if override_vertex is not None and override_face is not None:
+            face = np.asarray(override_face, dtype=np.int64)
+            vertex = np.asarray(override_vertex, dtype=np.float64)
+        elif cfg['mesh_type'] == 'icosphere':
             face, vertex = dg.getIcosphere(
                 radius=cfg['radius'],
                 subdivision=cfg['subdivision'])
@@ -170,7 +194,11 @@ class Mem3DGProcess(Process):
                 f"Unknown mesh_type: {cfg['mesh_type']}. "
                 f"Use 'icosphere', 'hexagon', or 'cylinder'.")
 
-        # Write PLY (workaround for Geometry array constructor segfault)
+        # Write PLY (workaround for Geometry array constructor segfault).
+        # Same path is used for both first build and rebuild — pymem3dg's
+        # Geometry constructor accepts only a file, not direct arrays.
+        if self._ply_path and os.path.exists(self._ply_path):
+            os.unlink(self._ply_path)
         self._ply_path = tempfile.mktemp(suffix='.ply')
         _write_ply(vertex, face, self._ply_path)
         geo = dg.Geometry(self._ply_path)
@@ -197,7 +225,13 @@ class Mem3DGProcess(Process):
             modulus=cfg['tension_modulus'],
             preferredArea=preferred_area)
 
-        # Osmotic model
+        # Osmotic model. The runtime input port `osmotic_strength_offset`
+        # (driven by sibling processes via the runtime input port) is added
+        # on top of the configured osmotic_strength here. Captured into
+        # self._current_osmotic_offset so update() can detect when a new
+        # value warrants a rebuild.
+        self._current_osmotic_offset = float(osmotic_offset)
+        effective_strength = cfg['osmotic_strength'] + self._current_osmotic_offset
         vol = geo.getVolume()
         if cfg['osmotic_model'] == 'constant':
             p.osmotic.form = partial(
@@ -208,11 +242,16 @@ class Mem3DGProcess(Process):
                 dgb.preferredVolumeOsmoticPressureModel,
                 preferredVolume=cfg['preferred_volume_fraction'] * vol,
                 reservoirVolume=0,
-                strength=cfg['osmotic_strength'])
+                strength=effective_strength)
 
         # Boundary conditions
         if cfg['boundary_condition'] != 'none':
             p.boundary.shapeBoundaryCondition = cfg['boundary_condition']
+
+        # Discard any prior output dir (rebuild path) before allocating new.
+        if self._output_dir and os.path.exists(self._output_dir):
+            import shutil
+            shutil.rmtree(self._output_dir, ignore_errors=True)
 
         # Build System
         self._system = dg.System(geometry=geo, parameters=p)
@@ -225,9 +264,26 @@ class Mem3DGProcess(Process):
             characteristicTimeStep=cfg['characteristic_timestep'],
             tolerance=cfg['tolerance'],
             outputDirectory=self._output_dir)
+        # Convergence flag must be cleared on rebuild — a previously
+        # converged integrator on the old osmotic strength may not be
+        # converged on the new one.
+        self._converged = False
 
     def update(self, state, interval):
         self._build_system()
+
+        # Runtime osmotic-strength rebuild path. When a sibling process
+        # writes a new offset, snapshot vertices/faces, drop the System,
+        # rebuild around the same geometry with the new effective strength,
+        # then keep stepping. The PLY round-trip is the same workaround the
+        # initial build uses for pymem3dg's array-constructor segfault.
+        offset = float(state.get('osmotic_strength_offset', 0.0))
+        if abs(offset - self._current_osmotic_offset) > 1e-15:
+            v = self._geometry.getVertexMatrix()
+            f = self._geometry.getFaceMatrix()
+            self._system = None  # force rebuild
+            self._build_system(override_vertex=v, override_face=f,
+                               osmotic_offset=offset)
 
         if self._converged:
             return {}
