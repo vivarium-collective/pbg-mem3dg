@@ -1,0 +1,89 @@
+name: membrane-demo
+description: "Minimal Mem3DG membrane mechanics demo: an icosphere relaxes under bending rigidity, surface tension, and osmotic pressure. Emits the scalar energy/area/volume trajectories each step."
+
+requires:
+  processes: [Mem3DGProcess, RAMEmitter]
+
+parameters:
+  interval:
+    type: float
+    default: 5.0
+    description: "Process interval in Mem3DG time units. The Euler integrator marches in characteristic_timestep increments to fill this window."
+  subdivision:
+    type: int
+    default: 2
+    description: "Icosphere subdivision level. Higher = finer mesh, slower per step."
+  characteristic_timestep:
+    type: float
+    default: 1.0
+    description: "Euler integrator base timestep."
+  Kbc:
+    type: float
+    default: 8.22e-5
+    description: "Bending rigidity coefficient."
+  tension_modulus:
+    type: float
+    default: 0.1
+    description: "Surface tension modulus (harmonic preferred-area model)."
+  osmotic_strength:
+    type: float
+    default: 0.02
+    description: "Osmotic pressure strength."
+  preferred_volume_fraction:
+    type: float
+    default: 0.7
+    description: "Fraction of initial volume used as the preferred-volume target."
+
+state:
+  membrane:
+    _type: process
+    address: "local:Mem3DGProcess"
+    config:
+      mesh_type: "icosphere"
+      radius: 1.0
+      subdivision: "${subdivision}"
+      Kbc: "${Kbc}"
+      tension_modulus: "${tension_modulus}"
+      osmotic_strength: "${osmotic_strength}"
+      preferred_volume_fraction: "${preferred_volume_fraction}"
+      characteristic_timestep: "${characteristic_timestep}"
+    inputs: {}
+    outputs:
+      total_energy: ["stores", "total_energy"]
+      bending_energy: ["stores", "bending_energy"]
+      surface_energy: ["stores", "surface_energy"]
+      pressure_energy: ["stores", "pressure_energy"]
+      surface_area: ["stores", "surface_area"]
+      volume: ["stores", "volume"]
+      vertex_positions: ["stores", "vertex_positions"]
+      mean_curvatures: ["stores", "mean_curvatures"]
+      converged: ["stores", "converged"]
+    interval: "${interval}"
+  stores:
+    total_energy: 0.0
+    bending_energy: 0.0
+    surface_energy: 0.0
+    pressure_energy: 0.0
+    surface_area: 0.0
+    volume: 0.0
+    vertex_positions: []
+    mean_curvatures: []
+    converged: false
+  emitter:
+    _type: step
+    address: "local:RAMEmitter"
+    config:
+      emit:
+        total_energy: "float"
+        bending_energy: "float"
+        surface_energy: "float"
+        pressure_energy: "float"
+        surface_area: "float"
+        volume: "float"
+    inputs:
+      total_energy: ["stores", "total_energy"]
+      bending_energy: ["stores", "bending_energy"]
+      surface_energy: ["stores", "surface_energy"]
+      pressure_energy: ["stores", "pressure_energy"]
+      surface_area: ["stores", "surface_area"]
+      volume: ["stores", "volume"]

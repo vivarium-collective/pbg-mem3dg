@@ -1,0 +1,89 @@
+name: membrane-demo-with-viz
+description: "Mem3DG membrane demo with a wired Visualization Step. Each update produces a Plotly HTML figure of the scalar energy/area/volume trajectories, written to the 'viz_html' store."
+
+requires:
+  processes: [Mem3DGProcess, MembranePlots, RAMEmitter]
+
+parameters:
+  interval:
+    type: float
+    default: 5.0
+    description: "Process interval in Mem3DG time units."
+  subdivision:
+    type: int
+    default: 2
+    description: "Icosphere subdivision level."
+  characteristic_timestep:
+    type: float
+    default: 1.0
+    description: "Euler integrator base timestep."
+  viz_title:
+    type: string
+    default: "Mem3DG membrane relaxation"
+    description: "Title displayed at the top of the Plotly figure."
+
+state:
+  membrane:
+    _type: process
+    address: "local:Mem3DGProcess"
+    config:
+      mesh_type: "icosphere"
+      radius: 1.0
+      subdivision: "${subdivision}"
+      characteristic_timestep: "${characteristic_timestep}"
+    inputs: {}
+    outputs:
+      total_energy: ["stores", "total_energy"]
+      bending_energy: ["stores", "bending_energy"]
+      surface_energy: ["stores", "surface_energy"]
+      pressure_energy: ["stores", "pressure_energy"]
+      surface_area: ["stores", "surface_area"]
+      volume: ["stores", "volume"]
+      vertex_positions: ["stores", "vertex_positions"]
+      mean_curvatures: ["stores", "mean_curvatures"]
+      converged: ["stores", "converged"]
+    interval: "${interval}"
+  stores:
+    total_energy: 0.0
+    bending_energy: 0.0
+    surface_energy: 0.0
+    pressure_energy: 0.0
+    surface_area: 0.0
+    volume: 0.0
+    vertex_positions: []
+    mean_curvatures: []
+    converged: false
+    viz_html: ""
+  viz:
+    _type: step
+    address: "local:MembranePlots"
+    config:
+      title: "${viz_title}"
+    inputs:
+      total_energy: ["stores", "total_energy"]
+      bending_energy: ["stores", "bending_energy"]
+      surface_energy: ["stores", "surface_energy"]
+      pressure_energy: ["stores", "pressure_energy"]
+      surface_area: ["stores", "surface_area"]
+      volume: ["stores", "volume"]
+      time: ["global_time"]
+    outputs:
+      html: ["stores", "viz_html"]
+  emitter:
+    _type: step
+    address: "local:RAMEmitter"
+    config:
+      emit:
+        total_energy: "float"
+        bending_energy: "float"
+        surface_energy: "float"
+        pressure_energy: "float"
+        surface_area: "float"
+        volume: "float"
+    inputs:
+      total_energy: ["stores", "total_energy"]
+      bending_energy: ["stores", "bending_energy"]
+      surface_energy: ["stores", "surface_energy"]
+      pressure_energy: ["stores", "pressure_energy"]
+      surface_area: ["stores", "surface_area"]
+      volume: ["stores", "volume"]
