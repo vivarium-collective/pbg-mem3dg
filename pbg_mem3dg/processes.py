@@ -291,13 +291,24 @@ class Mem3DGProcess(Process):
         # Runtime osmotic-strength input. The closure installed on
         # p.osmotic.form during _build_system reads self._current_osmotic_offset
         # live on every integrator step, so we just stash the new value
-        # here — no rebuild needed. Convergence flag clears too: a
-        # converged integrator at one offset is generally not converged
-        # at the next.
+        # here — no System rebuild needed. We DO rebuild the Euler
+        # integrator (cheap — System and Geometry are preserved), because
+        # its EXIT flag is read-only and gets latched True after the first
+        # convergence; without resetting it, subsequent offset changes
+        # would never trigger fresh integration. The geometry's current
+        # vertex positions ARE the new starting state for the new
+        # integrator, so this is a "warm restart" rather than a true rebuild.
+        import pymem3dg as dg
         new_offset = float(state.get('osmotic_strength_offset', 0.0))
         if abs(new_offset - self._current_osmotic_offset) > 1e-12:
             self._current_osmotic_offset = new_offset
             self._converged = False
+            self._integrator = dg.Euler(
+                system=self._system,
+                characteristicTimeStep=self.config['characteristic_timestep'],
+                tolerance=self.config['tolerance'],
+                outputDirectory=self._output_dir,
+            )
 
         if self._converged:
             return {}
