@@ -277,8 +277,15 @@ class Mem3DGProcess(Process):
         # rebuild around the same geometry with the new effective strength,
         # then keep stepping. The PLY round-trip is the same workaround the
         # initial build uses for pymem3dg's array-constructor segfault.
+        #
+        # The 1e-3 hysteresis threshold matters for performance: a coupled
+        # bigraph composite typically publishes a slightly-different offset
+        # every step (because the upstream signal is noisy), and rebuilding
+        # on every micro-fluctuation makes long demos minute-scale. The
+        # default osmotic_strength is O(1e-2), so 1e-3 is small enough to
+        # capture real coupling dynamics without flooding the rebuild path.
         offset = float(state.get('osmotic_strength_offset', 0.0))
-        if abs(offset - self._current_osmotic_offset) > 1e-15:
+        if abs(offset - self._current_osmotic_offset) > 1e-3:
             v = self._geometry.getVertexMatrix()
             f = self._geometry.getFaceMatrix()
             self._system = None  # force rebuild
