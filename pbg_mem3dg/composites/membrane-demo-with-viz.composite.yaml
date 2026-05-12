@@ -1,5 +1,6 @@
 name: membrane-demo-with-viz
 description: "Mem3DG membrane demo with a wired Visualization Step. Each update produces a Plotly HTML figure of the scalar energy/area/volume trajectories, written to the 'viz_html' store."
+tags: [membranes, mechanics, geometry, demo, visualization]
 
 requires:
   processes: [Mem3DGProcess, MembranePlots, RAMEmitter]

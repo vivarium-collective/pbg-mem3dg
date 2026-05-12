@@ -1,5 +1,6 @@
 name: membrane-demo
 description: "Minimal Mem3DG membrane mechanics demo: an icosphere relaxes under bending rigidity, surface tension, and osmotic pressure. Emits the scalar energy/area/volume trajectories each step."
+tags: [membranes, mechanics, geometry, demo]
 
 requires:
   processes: [Mem3DGProcess, RAMEmitter]
