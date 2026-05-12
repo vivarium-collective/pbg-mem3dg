@@ -226,18 +226,23 @@ class Mem3DGProcess(Process):
             preferredArea=preferred_area)
 
         # Osmotic model. The runtime input port `osmotic_strength_offset`
-        # (driven by sibling processes via the runtime input port) is added
-        # on top of the configured osmotic_strength here. Captured into
-        # self._current_osmotic_offset so update() can detect when a new
-        # value warrants a rebuild.
+        # is a polymorphic modulator: in `preferred_volume` mode it adds
+        # to `osmotic_strength` (stiffness toward the preferred volume);
+        # in `constant` mode it adds to `osmotic_pressure` (constant
+        # outward force on every vertex) — which is the lever a sibling
+        # process would drive to *inflate* a vesicle in response to
+        # internal pressure (e.g. actin pushing radially outward).
+        # Captured into self._current_osmotic_offset so update() can
+        # detect when a new value warrants a rebuild.
         self._current_osmotic_offset = float(osmotic_offset)
-        effective_strength = cfg['osmotic_strength'] + self._current_osmotic_offset
         vol = geo.getVolume()
         if cfg['osmotic_model'] == 'constant':
+            effective_pressure = cfg['osmotic_pressure'] + self._current_osmotic_offset
             p.osmotic.form = partial(
                 dgb.constantOsmoticPressureModel,
-                pressure=cfg['osmotic_pressure'])
+                pressure=effective_pressure)
         else:
+            effective_strength = cfg['osmotic_strength'] + self._current_osmotic_offset
             p.osmotic.form = partial(
                 dgb.preferredVolumeOsmoticPressureModel,
                 preferredVolume=cfg['preferred_volume_fraction'] * vol,
