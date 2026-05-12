@@ -226,28 +226,39 @@ class Mem3DGProcess(Process):
             preferredArea=preferred_area)
 
         # Osmotic model. The runtime input port `osmotic_strength_offset`
-        # is a polymorphic modulator: in `preferred_volume` mode it adds
-        # to `osmotic_strength` (stiffness toward the preferred volume);
-        # in `constant` mode it adds to `osmotic_pressure` (constant
-        # outward force on every vertex) — which is the lever a sibling
-        # process would drive to *inflate* a vesicle in response to
-        # internal pressure (e.g. actin pushing radially outward).
-        # Captured into self._current_osmotic_offset so update() can
-        # detect when a new value warrants a rebuild.
+        # is a polymorphic modulator that adds to either `osmotic_strength`
+        # (preferred_volume model) or `osmotic_pressure` (constant model).
+        # We install a CLOSURE on `p.osmotic.form` that reads the live
+        # value of self._current_osmotic_offset on every integrator step
+        # — that way a sibling process can drive the offset every PBG
+        # update without forcing a costly System+Euler rebuild. Existing
+        # callers that don't drive the input get the same defaults.
         self._current_osmotic_offset = float(osmotic_offset)
         vol = geo.getVolume()
         if cfg['osmotic_model'] == 'constant':
-            effective_pressure = cfg['osmotic_pressure'] + self._current_osmotic_offset
-            p.osmotic.form = partial(
-                dgb.constantOsmoticPressureModel,
-                pressure=effective_pressure)
+            baseline_pressure = cfg['osmotic_pressure']
+
+            def _osmotic_constant(volume):
+                return dgb.constantOsmoticPressureModel(
+                    volume=volume,
+                    pressure=baseline_pressure + self._current_osmotic_offset,
+                )
+            # Strong refs prevent the C++ PyCapsule from outliving the closure.
+            self._osmotic_form_callback = _osmotic_constant
+            p.osmotic.form = _osmotic_constant
         else:
-            effective_strength = cfg['osmotic_strength'] + self._current_osmotic_offset
-            p.osmotic.form = partial(
-                dgb.preferredVolumeOsmoticPressureModel,
-                preferredVolume=cfg['preferred_volume_fraction'] * vol,
-                reservoirVolume=0,
-                strength=effective_strength)
+            baseline_strength = cfg['osmotic_strength']
+            preferred_vol = cfg['preferred_volume_fraction'] * vol
+
+            def _osmotic_preferred(volume):
+                return dgb.preferredVolumeOsmoticPressureModel(
+                    volume=volume,
+                    preferredVolume=preferred_vol,
+                    reservoirVolume=0,
+                    strength=baseline_strength + self._current_osmotic_offset,
+                )
+            self._osmotic_form_callback = _osmotic_preferred
+            p.osmotic.form = _osmotic_preferred
 
         # Boundary conditions
         if cfg['boundary_condition'] != 'none':
@@ -277,25 +288,16 @@ class Mem3DGProcess(Process):
     def update(self, state, interval):
         self._build_system()
 
-        # Runtime osmotic-strength rebuild path. When a sibling process
-        # writes a new offset, snapshot vertices/faces, drop the System,
-        # rebuild around the same geometry with the new effective strength,
-        # then keep stepping. The PLY round-trip is the same workaround the
-        # initial build uses for pymem3dg's array-constructor segfault.
-        #
-        # The 1e-3 hysteresis threshold matters for performance: a coupled
-        # bigraph composite typically publishes a slightly-different offset
-        # every step (because the upstream signal is noisy), and rebuilding
-        # on every micro-fluctuation makes long demos minute-scale. The
-        # default osmotic_strength is O(1e-2), so 1e-3 is small enough to
-        # capture real coupling dynamics without flooding the rebuild path.
-        offset = float(state.get('osmotic_strength_offset', 0.0))
-        if abs(offset - self._current_osmotic_offset) > 1e-3:
-            v = self._geometry.getVertexMatrix()
-            f = self._geometry.getFaceMatrix()
-            self._system = None  # force rebuild
-            self._build_system(override_vertex=v, override_face=f,
-                               osmotic_offset=offset)
+        # Runtime osmotic-strength input. The closure installed on
+        # p.osmotic.form during _build_system reads self._current_osmotic_offset
+        # live on every integrator step, so we just stash the new value
+        # here — no rebuild needed. Convergence flag clears too: a
+        # converged integrator at one offset is generally not converged
+        # at the next.
+        new_offset = float(state.get('osmotic_strength_offset', 0.0))
+        if abs(new_offset - self._current_osmotic_offset) > 1e-12:
+            self._current_osmotic_offset = new_offset
+            self._converged = False
 
         if self._converged:
             return {}
